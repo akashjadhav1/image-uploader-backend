@@ -9,7 +9,8 @@ require("./config/db");
 const authRoutes = require("./routes/auth");
 
 const app = express();
-const PORT = 5000;
+// Render (and most PaaS) assign the port via process.env.PORT; fall back to 5000 locally
+const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors({
@@ -42,7 +43,7 @@ app.get("/api/users", (req, res) => {
 
 // Start the server
 app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
 
 // 404 for unknown routes (must be after all routes)
