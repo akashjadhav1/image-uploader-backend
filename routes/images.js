@@ -92,6 +92,48 @@ router.post("/upload", async (req, res) => {
   }
 });
 
+// GET /api/images
+// Lists all uploaded images in uploads/ (name, public URL, size, upload time).
+router.get("/", async (req, res) => {
+  try {
+    let entries;
+    try {
+      entries = await fs.readdir(UPLOAD_DIR, { withFileTypes: true });
+    } catch (error) {
+      // Directory doesn't exist yet -> nothing uploaded so far
+      if (error.code === "ENOENT") entries = [];
+      else throw error;
+    }
+
+    const allowedExts = new Set(Object.values(ALLOWED_IMAGE_TYPES));
+    const files = entries.filter((entry) => entry.isFile() && allowedExts.has(path.extname(entry.name).toLowerCase()));
+
+    const data = await Promise.all(
+      files.map(async (entry) => {
+        const stats = await fs.stat(path.join(UPLOAD_DIR, entry.name));
+        return {
+          fileName: entry.name,
+          url: `/uploads/${entry.name}`,
+          size: stats.size,
+          uploadedAt: stats.mtime.toISOString(),
+        };
+      })
+    );
+
+    // Newest first
+    data.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
+
+    return res.status(200).json({
+      success: true,
+      message: "Images fetched successfully",
+      count: data.length,
+      data,
+    });
+  } catch (error) {
+    return sendError(res, error);
+  }
+});
+
 // DELETE /api/images/:fileName
 // Removes an image from uploads/ by its stored file name.
 router.delete("/:fileName", async (req, res) => {
