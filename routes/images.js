@@ -23,8 +23,21 @@ function httpError(message, statusCode) {
   return err;
 }
 
+// Resolve the actual image name for a raw binary body. The bytes themselves
+// carry no filename, so the client must send it out-of-band via (in order):
+//   ?name= query param, X-File-Name header, or Content-Disposition header.
+function resolveBinaryName(req) {
+  if (req.query.name) return String(req.query.name);
+  const headerName = req.headers["x-file-name"];
+  if (headerName) return String(headerName);
+  const cd = req.headers["content-disposition"] || "";
+  const match = cd.match(/filename\*?="?([^";]+)"?/i);
+  if (match) return decodeURIComponent(match[1].trim());
+  return null;
+}
+
 // Persist the incoming image (raw binary body OR multipart form-data) to disk.
-// Returns { url, size, mimeType }.
+// Returns { url, size, mimeType, originalName }.
 async function persistUpload(req) {
   const contentType = (req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
 
@@ -36,7 +49,7 @@ async function persistUpload(req) {
       throw httpError("Empty request body. Send the image bytes as the request body.", 400);
     }
     const url = await saveImageBuffer(buffer, contentType);
-    return { url, size: buffer.length, mimeType: contentType };
+    return { url, size: buffer.length, mimeType: contentType, originalName: resolveBinaryName(req) };
   }
 
   const { files } = await getPayload(req);
@@ -48,7 +61,8 @@ async function persistUpload(req) {
     );
   }
   const url = await saveImage(imageFile);
-  return { url, size: imageFile.size, mimeType: imageFile.type };
+  // imageFile.name is the actual uploaded image name from form-data
+  return { url, size: imageFile.size, mimeType: imageFile.type, originalName: imageFile.name || null };
 }
 
 // Map any thrown error to a proper JSON response
@@ -87,16 +101,17 @@ function sendError(res, error) {
 // Validates, persists to uploads/, records ownership (createdBy), returns the URL.
 router.post("/upload", authenticate, async (req, res) => {
   try {
-    const { url, size, mimeType } = await persistUpload(req);
+    const { url, size, mimeType, originalName } = await persistUpload(req);
     const fileName = path.basename(url);
 
-    await Image.create({ fileName, url, size, mimeType, createdBy: req.userId });
+    await Image.create({ fileName, url, size, mimeType, originalName, createdBy: req.userId });
 
     return res.status(201).json({
       success: true,
       message: "Image uploaded successfully",
       data: {
         fileName,
+        file_name: originalName || fileName,
         url,
         size,
         createdBy: req.authUser,
@@ -113,15 +128,15 @@ function formatOwner(user) {
   return { id: user._id, username: user.username, email: user.email };
 }
 
-// Map fileName -> formatted owner from the Image collection for the given files.
-async function getOwnersByFileName(fileNames) {
+// Map fileName -> { originalName, createdBy } from the Image collection.
+async function getMetaByFileName(fileNames) {
   const docs = await Image.find({ fileName: { $in: fileNames } }).populate(
     "createdBy",
     "username email"
   );
   const map = {};
   for (const doc of docs) {
-    map[doc.fileName] = formatOwner(doc.createdBy || null);
+    map[doc.fileName] = { originalName: doc.originalName || null, createdBy: formatOwner(doc.createdBy || null) };
   }
   return map;
 }
@@ -158,10 +173,12 @@ router.get("/", async (req, res) => {
     // Newest first
     data.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
 
-    // Attach uploader details (legacy files without a record get createdBy: null)
-    const owners = await getOwnersByFileName(data.map((d) => d.fileName));
+    // Attach uploader details + original name (legacy files get null values)
+    const meta = await getMetaByFileName(data.map((d) => d.fileName));
     for (const item of data) {
-      item.createdBy = owners[item.fileName] || null;
+      const info = meta[item.fileName] || {};
+      item.file_name = info.originalName || item.fileName;
+      item.createdBy = info.createdBy || null;
     }
 
     return res.status(200).json({

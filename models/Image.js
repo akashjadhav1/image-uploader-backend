@@ -5,6 +5,7 @@ const mongoose = require("mongoose");
 const imageSchema = new mongoose.Schema(
   {
     fileName: { type: String, required: true, unique: true, index: true },
+    originalName: { type: String, default: null }, // actual uploaded image name
     url: { type: String, required: true }, // public path like /uploads/xxx.jpg
     size: { type: Number },                // bytes
     mimeType: { type: String },
