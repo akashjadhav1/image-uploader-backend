@@ -1,18 +1,26 @@
 const mongoose = require("mongoose");
 const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
 
-// Password hashing with Node's built-in scrypt (no external packages)
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString("hex");
-  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
-  return `${salt}:${hash}`;
-}
+const BCRYPT_ROUNDS = 10;
 
-function verifyPassword(password, stored) {
+// Legacy hashing (Node built-in scrypt), kept only so accounts created before
+// the bcrypt migration can still log in. Stored as "salt:hash".
+function verifyPasswordScrypt(password, stored) {
   const [salt, hash] = stored.split(":");
   if (!salt || !hash) return false;
   const candidate = crypto.scryptSync(password, salt, 64).toString("hex");
   return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(candidate, "hex"));
+}
+
+// Current hashing: bcrypt (self-salted, format "$2b$<rounds>...")
+function hashPassword(password) {
+  return bcrypt.hashSync(password, BCRYPT_ROUNDS);
+}
+
+// bcrypt hashes start with "$2a$", "$2b$" or "$2y$"; anything else is a legacy scrypt value
+function isBcryptHash(stored) {
+  return /^\$2[aby]\$/.test(String(stored || ""));
 }
 
 const userSchema = new mongoose.Schema(
@@ -48,15 +56,32 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Hash password before saving
+// Hash password before saving (skips if already a bcrypt hash to avoid double-hashing)
 userSchema.pre("save", async function () {
-  if (this.isModified("password")) {
+  if (this.isModified("password") && !isBcryptHash(this.password)) {
     this.password = hashPassword(this.password);
   }
 });
 
-userSchema.methods.comparePassword = function (password) {
-  return verifyPassword(password, this.password);
+// Verify against whichever format is stored (bcrypt, or legacy scrypt)
+userSchema.methods.comparePassword = async function (password) {
+  if (isBcryptHash(this.password)) {
+    return bcrypt.compare(password, this.password);
+  }
+  return verifyPasswordScrypt(password, this.password);
+};
+
+// True while the stored hash is still the old scrypt format
+userSchema.methods.needsRehash = function () {
+  return !isBcryptHash(this.password);
+};
+
+// Upgrade a legacy scrypt account to bcrypt after a successful login.
+// Assigning the plain password lets the pre-save hook hash it with bcrypt.
+userSchema.methods.upgradePassword = async function (plainPassword) {
+  this.password = plainPassword;
+  this.markModified("password");
+  await this.save();
 };
 
 // Simple HMAC-signed token (payload.signature), valid for 7 days

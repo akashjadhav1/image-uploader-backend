@@ -60,6 +60,10 @@ function validateRegisterInput(fields, email) {
   if (password && String(password).length < 6) {
     errors.push({ field: "password", message: "password must be at least 6 characters" });
   }
+  // bcrypt silently truncates at 72 bytes — reject longer input instead
+  if (password && Buffer.byteLength(String(password)) > 72) {
+    errors.push({ field: "password", message: "password must be 72 bytes or fewer" });
+  }
   return errors;
 }
 
@@ -174,6 +178,12 @@ router.post("/login", async (req, res) => {
         success: false,
         message: "Invalid email or password",
       });
+    }
+
+    // Transparently migrate legacy scrypt hashes to bcrypt now that the
+    // password has been verified
+    if (user.needsRehash()) {
+      await user.upgradePassword(password);
     }
 
     // Optional image update on login via form-data
