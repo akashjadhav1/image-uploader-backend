@@ -2,3 +2,7 @@
 
 .env
 /.env
+
+# Runtime-uploaded images must never be committed — Render's filesystem is
+# ephemeral, so tracked files get re-created on every deploy as phantom data.
+uploads/

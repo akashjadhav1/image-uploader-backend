@@ -5,7 +5,7 @@ const fs = require("fs/promises");
 const path = require("path");
 const { Readable } = require("stream");
 
-const UPLOAD_DIR = path.join(__dirname, "..", "uploads");
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, "..", "uploads");
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5 MB
 const ALLOWED_IMAGE_TYPES = {
   "image/jpeg": ".jpg",

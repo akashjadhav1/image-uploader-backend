@@ -9,6 +9,9 @@ require("./config/db");
 const authRoutes = require("./routes/auth");
 const imageRoutes = require("./routes/images");
 
+// Absolute upload directory (honours process.env.UPLOAD_DIR)
+const { UPLOAD_DIR } = require("./utils/payload");
+
 const app = express();
 // Render (and most PaaS) assign the port via process.env.PORT; fall back to 5000 locally
 const PORT = process.env.PORT || 5000;
@@ -25,7 +28,7 @@ app.use(cors({
 app.use(express.json());
 
 // Serve uploaded images statically: /uploads/<filename>
-app.use("/uploads", express.static("uploads"));
+app.use("/uploads", express.static(UPLOAD_DIR));
 
 // Test route
 app.get("/", (req, res) => {
