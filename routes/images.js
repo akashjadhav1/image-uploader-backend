@@ -2,6 +2,8 @@ const fs = require("fs/promises");
 const path = require("path");
 const express = require("express");
 const { getPayload, saveImage, saveImageBuffer, UPLOAD_DIR, ALLOWED_IMAGE_TYPES } = require("../utils/payload");
+const { authenticate } = require("../utils/auth");
+const Image = require("../models/Image");
 
 const router = express.Router();
 
@@ -12,6 +14,41 @@ async function readRawBody(req) {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
+}
+
+// Throw an error carrying an HTTP status for the error handler
+function httpError(message, statusCode) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
+
+// Persist the incoming image (raw binary body OR multipart form-data) to disk.
+// Returns { url, size, mimeType }.
+async function persistUpload(req) {
+  const contentType = (req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+
+  if (ALLOWED_IMAGE_TYPES[contentType]) {
+    // Raw binary image body — express.json only parses application/json, so the
+    // stream is still unconsumed and can be read directly.
+    const buffer = await readRawBody(req);
+    if (!buffer.length) {
+      throw httpError("Empty request body. Send the image bytes as the request body.", 400);
+    }
+    const url = await saveImageBuffer(buffer, contentType);
+    return { url, size: buffer.length, mimeType: contentType };
+  }
+
+  const { files } = await getPayload(req);
+  const imageFile = files.image || files.profileImage;
+  if (!imageFile) {
+    throw httpError(
+      "No image provided. Send multipart/form-data ('image' part) or a raw binary body with an image Content-Type.",
+      400
+    );
+  }
+  const url = await saveImage(imageFile);
+  return { url, size: imageFile.size, mimeType: imageFile.type };
 }
 
 // Map any thrown error to a proper JSON response
@@ -43,41 +80,17 @@ function sendError(res, error) {
 }
 
 // POST /api/images/upload
-// Accepts either:
+// Requires a logged-in user (Authorization: Bearer <token>). Accepts either:
 //   - multipart/form-data with an 'image' (or 'profileImage') file part, OR
 //   - a raw binary body whose Content-Type is an allowed image MIME type
 //     (image/jpeg, image/png, image/webp, image/gif).
-// Validates, persists to uploads/, returns the public URL.
-router.post("/upload", async (req, res) => {
+// Validates, persists to uploads/, records ownership (createdBy), returns the URL.
+router.post("/upload", authenticate, async (req, res) => {
   try {
-    const mimeType = (req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
-
-    let url;
-    if (ALLOWED_IMAGE_TYPES[mimeType]) {
-      // Raw binary image body — express.json only parses application/json, so the
-      // stream is still unconsumed and can be read directly.
-      const buffer = await readRawBody(req);
-      if (!buffer.length) {
-        return res.status(400).json({
-          success: false,
-          message: "Empty request body. Send the image bytes as the request body.",
-        });
-      }
-      url = await saveImageBuffer(buffer, mimeType);
-    } else {
-      const { files } = await getPayload(req);
-      const imageFile = files.image || files.profileImage;
-
-      if (!imageFile) {
-        return res.status(400).json({
-          success: false,
-          message: "No image provided. Send multipart/form-data ('image' part) or a raw binary body with an image Content-Type.",
-        });
-      }
-      url = await saveImage(imageFile);
-    }
-
+    const { url, size, mimeType } = await persistUpload(req);
     const fileName = path.basename(url);
+
+    await Image.create({ fileName, url, size, mimeType, createdBy: req.userId });
 
     return res.status(201).json({
       success: true,
@@ -85,6 +98,8 @@ router.post("/upload", async (req, res) => {
       data: {
         fileName,
         url,
+        size,
+        createdBy: req.authUser,
       },
     });
   } catch (error) {
@@ -92,8 +107,28 @@ router.post("/upload", async (req, res) => {
   }
 });
 
+// Shallow user info for the createdBy relation (null when no owner)
+function formatOwner(user) {
+  if (!user) return null;
+  return { id: user._id, username: user.username, email: user.email };
+}
+
+// Map fileName -> formatted owner from the Image collection for the given files.
+async function getOwnersByFileName(fileNames) {
+  const docs = await Image.find({ fileName: { $in: fileNames } }).populate(
+    "createdBy",
+    "username email"
+  );
+  const map = {};
+  for (const doc of docs) {
+    map[doc.fileName] = formatOwner(doc.createdBy || null);
+  }
+  return map;
+}
+
 // GET /api/images
-// Lists all uploaded images in uploads/ (name, public URL, size, upload time).
+// Lists all uploaded images in uploads/ (name, public URL, size, upload time,
+// and the createdBy user's details when the uploader is known).
 router.get("/", async (req, res) => {
   try {
     let entries;
@@ -123,6 +158,12 @@ router.get("/", async (req, res) => {
     // Newest first
     data.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
 
+    // Attach uploader details (legacy files without a record get createdBy: null)
+    const owners = await getOwnersByFileName(data.map((d) => d.fileName));
+    for (const item of data) {
+      item.createdBy = owners[item.fileName] || null;
+    }
+
     return res.status(200).json({
       success: true,
       message: "Images fetched successfully",
@@ -149,6 +190,8 @@ router.delete("/:fileName", async (req, res) => {
     }
 
     await fs.unlink(path.join(UPLOAD_DIR, fileName));
+    // Remove the ownership record too (no-op if none exists)
+    await Image.deleteOne({ fileName });
 
     return res.status(200).json({
       success: true,

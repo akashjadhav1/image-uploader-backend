@@ -73,4 +73,27 @@ userSchema.methods.generateToken = function () {
   return `${payload}.${signature}`;
 };
 
+// Verify an HMAC token produced by generateToken. Returns the payload
+// ({ id, username, exp }) or null when missing, tampered, or expired.
+userSchema.statics.verifyToken = function (token) {
+  const secret = process.env.JWT_SECRET || "dev-secret-change-me";
+  if (!token || typeof token !== "string") return null;
+
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return null;
+
+  const expected = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+
+  try {
+    const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!data.exp || data.exp < Date.now()) return null;
+    return data;
+  } catch {
+    return null;
+  }
+};
+
 module.exports = mongoose.model("User", userSchema);
