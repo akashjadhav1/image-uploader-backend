@@ -7,6 +7,7 @@ require("./config/db");
 
 // Routes
 const authRoutes = require("./routes/auth");
+const imageRoutes = require("./routes/images");
 
 const app = express();
 // Render (and most PaaS) assign the port via process.env.PORT; fall back to 5000 locally
@@ -33,6 +34,9 @@ app.get("/", (req, res) => {
 
 // Auth routes: /api/auth/register, /api/auth/login
 app.use("/api/auth", authRoutes);
+
+// Image routes: /api/images/upload, /api/images/:fileName
+app.use("/api/images", imageRoutes);
 
 // Sample API endpoint
 app.get("/api/users", (req, res) => {

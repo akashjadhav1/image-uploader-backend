@@ -71,25 +71,31 @@ function extractProfile(fields) {
   return Object.keys(profile).length ? profile : null;
 }
 
-// Validate + persist an image File to uploads/, returns its public URL path
-async function saveImage(file) {
-  if (!ALLOWED_IMAGE_TYPES[file.type]) {
+// Validate buffer + mime type, persist to uploads/, returns its public URL path
+async function saveImageBuffer(buffer, mimeType) {
+  const ext = ALLOWED_IMAGE_TYPES[mimeType];
+  if (!ext) {
     const err = new Error(
-      `Unsupported image type '${file.type || "unknown"}'. Allowed: ${Object.keys(ALLOWED_IMAGE_TYPES).join(", ")}`
+      `Unsupported image type '${mimeType || "unknown"}'. Allowed: ${Object.keys(ALLOWED_IMAGE_TYPES).join(", ")}`
     );
     err.statusCode = 400;
     throw err;
   }
-  const buffer = Buffer.from(await file.arrayBuffer());
   if (buffer.length > MAX_IMAGE_SIZE) {
     const err = new Error(`Image too large. Max ${MAX_IMAGE_SIZE / 1024 / 1024} MB`);
     err.statusCode = 413;
     throw err;
   }
   await fs.mkdir(UPLOAD_DIR, { recursive: true });
-  const fileName = `${Date.now()}_${crypto.randomBytes(8).toString("hex")}${ALLOWED_IMAGE_TYPES[file.type]}`;
+  const fileName = `${Date.now()}_${crypto.randomBytes(8).toString("hex")}${ext}`;
   await fs.writeFile(path.join(UPLOAD_DIR, fileName), buffer);
   return `/uploads/${fileName}`;
 }
 
-module.exports = { getPayload, extractProfile, saveImage, UPLOAD_DIR };
+// Validate + persist an image File to uploads/, returns its public URL path
+async function saveImage(file) {
+  const buffer = Buffer.from(await file.arrayBuffer());
+  return saveImageBuffer(buffer, file.type);
+}
+
+module.exports = { getPayload, extractProfile, saveImage, saveImageBuffer, UPLOAD_DIR, ALLOWED_IMAGE_TYPES };
